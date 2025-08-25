@@ -27,6 +27,7 @@ const TOKENS = {
 const UNISWAP_V3_CONFIG = {
   SWAP_ROUTER_ADDRESS: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
   QUOTER_ADDRESS: '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6',
+  POOL_ADDRESS: '0xef8cd93baf5d97d9d4da15263c56995038432db8',
   POOL_FEE: 100,
 };
 
@@ -100,6 +101,31 @@ const SWAP_ROUTER_ABI = [
   }
 ];
 
+const POOL_ABI = [
+  {
+    inputs: [],
+    name: 'slot0',
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' }
+    ],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
+    inputs: [],
+    name: 'liquidity',
+    outputs: [{ name: '', type: 'uint128' }],
+    stateMutability: 'view',
+    type: 'function'
+  }
+];
+
 export default function EnhancedViemSwap() {
   const [account, setAccount] = useState(null);
   const [balances, setBalances] = useState({});
@@ -115,6 +141,8 @@ export default function EnhancedViemSwap() {
   const [priceImpact, setPriceImpact] = useState(0);
   const [error, setError] = useState('');
   const [transactionHistory, setTransactionHistory] = useState([]);
+  const [poolBalances, setPoolBalances] = useState({});
+  const [currentPrice, setCurrentPrice] = useState(null);
 
   const publicClient = createPublicClient({
     chain: arbitrum,
@@ -145,7 +173,17 @@ export default function EnhancedViemSwap() {
 
   const loadBalances = async (address) => {
     try {
-      const [usd24Balance, usdcBalance, usd24Allowance, usdcAllowance] = await Promise.all([
+      const [
+        usd24Balance, 
+        usdcBalance, 
+        usd24Allowance, 
+        usdcAllowance,
+        poolUsd24Balance,
+        poolUsdcBalance,
+        slot0Data,
+        liquidity
+      ] = await Promise.all([
+        // 用户余额
         publicClient.readContract({
           address: TOKENS.USD24.address,
           abi: ERC20_ABI,
@@ -158,6 +196,7 @@ export default function EnhancedViemSwap() {
           functionName: 'balanceOf',
           args: [address],
         }),
+        // 用户授权
         publicClient.readContract({
           address: TOKENS.USD24.address,
           abi: ERC20_ABI,
@@ -169,6 +208,30 @@ export default function EnhancedViemSwap() {
           abi: ERC20_ABI,
           functionName: 'allowance',
           args: [address, UNISWAP_V3_CONFIG.SWAP_ROUTER_ADDRESS],
+        }),
+        // 池子余额
+        publicClient.readContract({
+          address: TOKENS.USD24.address,
+          abi: ERC20_ABI,
+          functionName: 'balanceOf',
+          args: [UNISWAP_V3_CONFIG.POOL_ADDRESS],
+        }),
+        publicClient.readContract({
+          address: TOKENS.USDC.address,
+          abi: ERC20_ABI,
+          functionName: 'balanceOf',
+          args: [UNISWAP_V3_CONFIG.POOL_ADDRESS],
+        }),
+        // 池子价格信息
+        publicClient.readContract({
+          address: UNISWAP_V3_CONFIG.POOL_ADDRESS,
+          abi: POOL_ABI,
+          functionName: 'slot0',
+        }),
+        publicClient.readContract({
+          address: UNISWAP_V3_CONFIG.POOL_ADDRESS,
+          abi: POOL_ABI,
+          functionName: 'liquidity',
         })
       ]);
 
@@ -181,10 +244,29 @@ export default function EnhancedViemSwap() {
         USD24: usd24Allowance.toString(),
         USDC: usdcAllowance.toString(),
       });
+
+      setPoolBalances({
+        USD24: formatUnits(poolUsd24Balance, TOKENS.USD24.decimals),
+        USDC: formatUnits(poolUsdcBalance, TOKENS.USDC.decimals),
+      });
+
+      // 计算当前价格 (sqrtPriceX96 -> price)
+      const sqrtPriceX96 = slot0Data[0];
+      const price = calculatePriceFromSqrtX96(sqrtPriceX96);
+      setCurrentPrice(price);
+      
     } catch (err) {
       console.error('加载余额失败:', err);
       setError('加载余额失败: ' + err.message);
     }
+  };
+
+  // 从 sqrtPriceX96 计算实际价格
+  const calculatePriceFromSqrtX96 = (sqrtPriceX96) => {
+    const Q96 = 2n ** 96n;
+    const price = (sqrtPriceX96 * sqrtPriceX96) / Q96;
+    // 调整精度差异 (USDC 6位, USD24 2位, 差4位)
+    return Number(price) / Math.pow(10, TOKENS.USDC.decimals - TOKENS.USD24.decimals);
   };
 
   const getQuote = useCallback(async (amount, from, to) => {
@@ -222,10 +304,18 @@ export default function EnhancedViemSwap() {
       const rate = parseFloat(formattedOutput) / parseFloat(amount);
       setExchangeRate(rate);
 
-      // 计算价格影响 (简化版本)
-      const expectedRate = 1;
-      const impact = Math.abs((rate - expectedRate) / expectedRate * 100);
-      setPriceImpact(impact);
+      // 计算实际价格影响
+      if (currentPrice && poolBalances.USD24 && poolBalances.USDC) {
+        const actualRate = from === 'USD24' ? rate : 1 / rate;
+        const marketPrice = from === 'USD24' ? currentPrice : 1 / currentPrice;
+        const impact = Math.abs((actualRate - marketPrice) / marketPrice * 100);
+        setPriceImpact(impact);
+      } else {
+        // 后备计算方式
+        const expectedRate = from === 'USD24' ? (currentPrice || 0.998) : (1 / (currentPrice || 0.998));
+        const impact = Math.abs((rate - expectedRate) / expectedRate * 100);
+        setPriceImpact(impact);
+      }
 
     } catch (err) {
       console.error('获取报价失败:', err);
@@ -238,7 +328,7 @@ export default function EnhancedViemSwap() {
     }
 
     setIsQuoting(false);
-  }, [publicClient, toTokenData.decimals]);
+  }, [publicClient, toTokenData.decimals, currentPrice, poolBalances]);
 
   useEffect(() => {
     const debounceTimer = setTimeout(() => {
@@ -445,22 +535,51 @@ export default function EnhancedViemSwap() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-blue-50 rounded-lg p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <div className="w-4 h-4 rounded-full bg-gradient-to-r from-blue-400 to-blue-600"></div>
-                  <span className="text-xs font-medium text-blue-800">{fromToken}</span>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-4 h-4 rounded-full bg-gradient-to-r from-blue-400 to-blue-600"></div>
+                    <span className="text-xs font-medium text-blue-800">{fromToken}</span>
+                  </div>
+                  <p className="text-sm font-semibold text-blue-900">{formatBalance(balances[fromToken])}</p>
                 </div>
-                <p className="text-sm font-semibold text-blue-900">{formatBalance(balances[fromToken])}</p>
+
+                <div className="bg-green-50 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-4 h-4 rounded-full bg-gradient-to-r from-green-400 to-green-600"></div>
+                    <span className="text-xs font-medium text-green-800">{toToken}</span>
+                  </div>
+                  <p className="text-sm font-semibold text-green-900">{formatBalance(balances[toToken])}</p>
+                </div>
               </div>
 
-              <div className="bg-green-50 rounded-lg p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <div className="w-4 h-4 rounded-full bg-gradient-to-r from-green-400 to-green-600"></div>
-                  <span className="text-xs font-medium text-green-800">{toToken}</span>
+              {/* 池子信息 */}
+              {(poolBalances.USD24 || poolBalances.USDC) && (
+                <div className="bg-purple-50 rounded-lg p-3 border border-purple-100">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-4 h-4 rounded-full bg-gradient-to-r from-purple-400 to-purple-600"></div>
+                    <span className="text-xs font-medium text-purple-800">池子流动性</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-purple-600">{fromToken}: </span>
+                      <span className="font-semibold text-purple-900">{formatBalance(poolBalances[fromToken])}</span>
+                    </div>
+                    <div>
+                      <span className="text-purple-600">{toToken}: </span>
+                      <span className="font-semibold text-purple-900">{formatBalance(poolBalances[toToken])}</span>
+                    </div>
+                  </div>
+                  {currentPrice && (
+                    <div className="mt-2 pt-2 border-t border-purple-200">
+                      <span className="text-xs text-purple-600">
+                        当前价格: {currentPrice.toFixed(6)} {toToken}/{fromToken}
+                      </span>
+                    </div>
+                  )}
                 </div>
-                <p className="text-sm font-semibold text-green-900">{formatBalance(balances[toToken])}</p>
-              </div>
+              )}
             </div>
           </div>
 
