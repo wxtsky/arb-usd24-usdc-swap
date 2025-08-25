@@ -264,9 +264,17 @@ export default function EnhancedViemSwap() {
   // 从 sqrtPriceX96 计算实际价格
   const calculatePriceFromSqrtX96 = (sqrtPriceX96) => {
     const Q96 = 2n ** 96n;
-    const price = (sqrtPriceX96 * sqrtPriceX96) / Q96;
-    // 调整精度差异 (USDC 6位, USD24 2位, 差4位)
-    return Number(price) / Math.pow(10, TOKENS.USDC.decimals - TOKENS.USD24.decimals);
+    
+    // 计算价格：price = (sqrtPriceX96 / 2^96)^2
+    const sqrtPrice = Number(sqrtPriceX96) / Math.pow(2, 96);
+    const rawPrice = sqrtPrice * sqrtPrice;
+    
+    // Uniswap V3 的价格是 token1/token0 的比例
+    // 由于我们需要 USDC/USD24 的价格，需要调整精度
+    // USD24 是 2 位小数，USDC 是 6 位小数
+    const precisionAdjustment = Math.pow(10, TOKENS.USDC.decimals - TOKENS.USD24.decimals);
+    
+    return rawPrice * precisionAdjustment;
   };
 
   const getQuote = useCallback(async (amount, from, to) => {
@@ -305,26 +313,51 @@ export default function EnhancedViemSwap() {
       setExchangeRate(rate);
 
       // 计算实际价格影响
-      if (currentPrice && poolBalances.USD24 && poolBalances.USDC) {
-        const actualRate = from === 'USD24' ? rate : 1 / rate;
-        const marketPrice = from === 'USD24' ? currentPrice : 1 / currentPrice;
+      if (currentPrice) {
+        // currentPrice 是 USDC/USD24 的价格（从池子的 sqrtPriceX96 计算得出）
+        let marketPrice, actualRate;
+        
+        if (from === 'USD24') {
+          // 从 USD24 换到 USDC
+          marketPrice = currentPrice; // USDC/USD24
+          actualRate = rate; // 实际得到的 USDC/USD24 比例
+        } else {
+          // 从 USDC 换到 USD24  
+          marketPrice = 1 / currentPrice; // USD24/USDC
+          actualRate = rate; // 实际得到的 USD24/USDC 比例
+        }
+        
         const impact = Math.abs((actualRate - marketPrice) / marketPrice * 100);
         setPriceImpact(impact);
       } else {
-        // 后备计算方式
-        const expectedRate = from === 'USD24' ? (currentPrice || 0.998) : (1 / (currentPrice || 0.998));
+        // 如果没有池子价格，使用1:1作为参考
+        const expectedRate = 1;
         const impact = Math.abs((rate - expectedRate) / expectedRate * 100);
         setPriceImpact(impact);
       }
 
     } catch (err) {
       console.error('获取报价失败:', err);
-      // 使用后备价格
-      const fallbackRate = from === 'USD24' ? 0.998 : 1.002;
+      // 使用池子价格作为后备，如果没有则使用默认价格
+      let fallbackRate;
+      if (currentPrice) {
+        fallbackRate = from === 'USD24' ? currentPrice * 0.999 : (1 / currentPrice) * 0.999; // 假设0.1%的滑点
+      } else {
+        fallbackRate = from === 'USD24' ? 0.998 : 1.002;
+      }
+      
       const fallbackOutput = (parseFloat(amount) * fallbackRate).toFixed(toTokenData.decimals);
       setOutputAmount(fallbackOutput);
       setExchangeRate(fallbackRate);
-      setPriceImpact(Math.abs((fallbackRate - 1) * 100));
+      
+      // 使用池子价格计算价格影响
+      if (currentPrice) {
+        const marketPrice = from === 'USD24' ? currentPrice : 1 / currentPrice;
+        const impact = Math.abs((fallbackRate - marketPrice) / marketPrice * 100);
+        setPriceImpact(impact);
+      } else {
+        setPriceImpact(Math.abs((fallbackRate - 1) * 100));
+      }
     }
 
     setIsQuoting(false);
@@ -574,7 +607,7 @@ export default function EnhancedViemSwap() {
                   {currentPrice && (
                     <div className="mt-2 pt-2 border-t border-purple-200">
                       <span className="text-xs text-purple-600">
-                        当前价格: {currentPrice.toFixed(6)} {toToken}/{fromToken}
+                        池子价格: {currentPrice.toFixed(6)} USDC/USD24
                       </span>
                     </div>
                   )}
