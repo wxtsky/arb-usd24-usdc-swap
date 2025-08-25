@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { 
-  createWalletClient, 
-  createPublicClient, 
-  http, 
-  parseUnits, 
+import {
+  createWalletClient,
+  createPublicClient,
+  http,
+  parseUnits,
   formatUnits,
   custom
 } from 'viem';
@@ -18,7 +18,7 @@ const TOKENS = {
     decimals: 2,
   },
   USDC: {
-    address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', 
+    address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
     symbol: 'USDC',
     decimals: 6,
   },
@@ -85,7 +85,6 @@ const SWAP_ROUTER_ABI = [
           { name: 'tokenOut', type: 'address' },
           { name: 'fee', type: 'uint24' },
           { name: 'recipient', type: 'address' },
-          { name: 'deadline', type: 'uint256' },
           { name: 'amountIn', type: 'uint256' },
           { name: 'amountOutMinimum', type: 'uint256' },
           { name: 'sqrtPriceLimitX96', type: 'uint160' }
@@ -116,7 +115,7 @@ export default function EnhancedViemSwap() {
   const [priceImpact, setPriceImpact] = useState(0);
   const [error, setError] = useState('');
   const [transactionHistory, setTransactionHistory] = useState([]);
-  
+
   const publicClient = createPublicClient({
     chain: arbitrum,
     transport: http()
@@ -135,7 +134,7 @@ export default function EnhancedViemSwap() {
       const accounts = await window.ethereum.request({
         method: 'eth_requestAccounts'
       });
-      
+
       const address = accounts[0];
       setAccount(address);
       await loadBalances(address);
@@ -177,7 +176,7 @@ export default function EnhancedViemSwap() {
         USD24: formatUnits(usd24Balance, TOKENS.USD24.decimals),
         USDC: formatUnits(usdcBalance, TOKENS.USDC.decimals),
       });
-      
+
       setAllowances({
         USD24: usd24Allowance.toString(),
         USDC: usdcAllowance.toString(),
@@ -203,7 +202,7 @@ export default function EnhancedViemSwap() {
       const fromTokenInfo = TOKENS[from];
       const toTokenInfo = TOKENS[to];
       const amountIn = parseUnits(amount, fromTokenInfo.decimals);
-      
+
       const quote = await publicClient.readContract({
         address: UNISWAP_V3_CONFIG.QUOTER_ADDRESS,
         abi: QUOTER_ABI,
@@ -219,15 +218,15 @@ export default function EnhancedViemSwap() {
 
       const formattedOutput = formatUnits(quote, toTokenInfo.decimals);
       setOutputAmount(formattedOutput);
-      
+
       const rate = parseFloat(formattedOutput) / parseFloat(amount);
       setExchangeRate(rate);
-      
+
       // 计算价格影响 (简化版本)
       const expectedRate = 1;
       const impact = Math.abs((rate - expectedRate) / expectedRate * 100);
       setPriceImpact(impact);
-      
+
     } catch (err) {
       console.error('获取报价失败:', err);
       // 使用后备价格
@@ -244,7 +243,7 @@ export default function EnhancedViemSwap() {
   useEffect(() => {
     const debounceTimer = setTimeout(() => {
       getQuote(inputAmount, fromToken, toToken);
-    }, 500);
+    }, 1000);
 
     return () => clearTimeout(debounceTimer);
   }, [inputAmount, fromToken, toToken, getQuote]);
@@ -288,7 +287,7 @@ export default function EnhancedViemSwap() {
 
   const approve = async () => {
     if (!account) return;
-    
+
     setIsLoading(true);
     setError('');
 
@@ -299,15 +298,20 @@ export default function EnhancedViemSwap() {
         account
       });
 
+      // 使用各代币的最大合理授权数量
+      const maxAmount = fromTokenData.decimals === 2 
+        ? parseUnits('10000000', 2)  // USD24: 1000万，2位精度
+        : parseUnits('10000000', 6); // USDC: 1000万，6位精度
+      
       const hash = await walletClient.writeContract({
         address: fromTokenData.address,
         abi: ERC20_ABI,
         functionName: 'approve',
-        args: [UNISWAP_V3_CONFIG.SWAP_ROUTER_ADDRESS, parseUnits('1000000', fromTokenData.decimals)],
+        args: [UNISWAP_V3_CONFIG.SWAP_ROUTER_ADDRESS, maxAmount],
       });
 
       console.log('授权交易哈希:', hash);
-      
+
       await publicClient.waitForTransactionReceipt({ hash });
       await loadBalances(account);
       setError('');
@@ -315,13 +319,13 @@ export default function EnhancedViemSwap() {
       console.error('授权失败:', err);
       setError('授权失败: ' + err.message);
     }
-    
+
     setIsLoading(false);
   };
 
   const swap = async () => {
     if (!account || !inputAmount || !outputAmount) return;
-    
+
     setIsLoading(true);
     setError('');
 
@@ -334,7 +338,7 @@ export default function EnhancedViemSwap() {
 
       const amountIn = parseUnits(inputAmount, fromTokenData.decimals);
       const minAmountOut = parseUnits(
-        (parseFloat(outputAmount) * (1 - parseFloat(slippage) / 100)).toFixed(toTokenData.decimals), 
+        (parseFloat(outputAmount) * (1 - parseFloat(slippage) / 100)).toFixed(toTokenData.decimals),
         toTokenData.decimals
       );
 
@@ -343,7 +347,6 @@ export default function EnhancedViemSwap() {
         tokenOut: toTokenData.address,
         fee: UNISWAP_V3_CONFIG.POOL_FEE,
         recipient: account,
-        deadline: BigInt(Math.floor(Date.now() / 1000) + 1200),
         amountIn,
         amountOutMinimum: minAmountOut,
         sqrtPriceLimitX96: 0n,
@@ -357,9 +360,9 @@ export default function EnhancedViemSwap() {
       });
 
       console.log('交易哈希:', hash);
-      
+
       await publicClient.waitForTransactionReceipt({ hash });
-      
+
       // 添加到交易历史
       const newTransaction = {
         hash,
@@ -369,7 +372,7 @@ export default function EnhancedViemSwap() {
         timestamp: new Date().toLocaleString(),
       };
       setTransactionHistory(prev => [newTransaction, ...prev.slice(0, 4)]);
-      
+
       await loadBalances(account);
       setInputAmount('');
       setOutputAmount('');
@@ -380,7 +383,7 @@ export default function EnhancedViemSwap() {
       console.error('交易失败:', err);
       setError('交易失败: ' + err.message);
     }
-    
+
     setIsLoading(false);
   };
 
@@ -399,7 +402,7 @@ export default function EnhancedViemSwap() {
           {fromToken} ⇄ {toToken}
         </h1>
       </div>
-      
+
       {!account ? (
         <div className="bg-white rounded-2xl shadow-xl p-6 sm:p-8">
           <div className="text-center mb-6">
@@ -430,7 +433,7 @@ export default function EnhancedViemSwap() {
                 </div>
                 <div>
                   <p className="font-medium text-gray-800 text-sm">已连接</p>
-                  <p className="text-xs text-gray-500">{account.slice(0,6)}...{account.slice(-4)}</p>
+                  <p className="text-xs text-gray-500">{account.slice(0, 6)}...{account.slice(-4)}</p>
                 </div>
               </div>
               <div className="text-right">
@@ -441,7 +444,7 @@ export default function EnhancedViemSwap() {
                 </div>
               </div>
             </div>
-            
+
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-blue-50 rounded-lg p-3">
                 <div className="flex items-center gap-2 mb-1">
@@ -450,7 +453,7 @@ export default function EnhancedViemSwap() {
                 </div>
                 <p className="text-sm font-semibold text-blue-900">{formatBalance(balances[fromToken])}</p>
               </div>
-              
+
               <div className="bg-green-50 rounded-lg p-3">
                 <div className="flex items-center gap-2 mb-1">
                   <div className="w-4 h-4 rounded-full bg-gradient-to-r from-green-400 to-green-600"></div>
@@ -489,11 +492,10 @@ export default function EnhancedViemSwap() {
                       <button
                         key={value}
                         onClick={() => setSlippage(value)}
-                        className={`px-3 py-1 rounded text-sm font-medium transition-all ${
-                          slippage === value
-                            ? 'bg-white text-blue-600'
-                            : 'text-white hover:bg-white hover:bg-opacity-20'
-                        }`}
+                        className={`px-3 py-1 rounded text-sm font-medium transition-all ${slippage === value
+                          ? 'bg-white text-blue-600'
+                          : 'text-white hover:bg-white hover:bg-opacity-20'
+                          }`}
                       >
                         {value}%
                       </button>
@@ -521,7 +523,7 @@ export default function EnhancedViemSwap() {
                     </button>
                   </div>
                 </div>
-                
+
                 <div className="flex items-center gap-3">
                   <div className="flex-1">
                     <input
@@ -529,9 +531,8 @@ export default function EnhancedViemSwap() {
                       value={inputAmount}
                       onChange={(e) => handleInputChange(e.target.value)}
                       placeholder="0.00"
-                      className={`w-full bg-transparent text-2xl sm:text-3xl font-semibold outline-none placeholder-gray-400 ${
-                        hasInsufficientBalance() ? 'text-red-500' : 'text-gray-900'
-                      }`}
+                      className={`w-full bg-transparent text-2xl sm:text-3xl font-semibold outline-none placeholder-gray-400 ${hasInsufficientBalance() ? 'text-red-500' : 'text-gray-900'
+                        }`}
                       style={{ fontSize: 'clamp(1.5rem, 5vw, 2rem)' }}
                     />
                     {hasInsufficientBalance() && (
@@ -543,7 +544,7 @@ export default function EnhancedViemSwap() {
                       </p>
                     )}
                   </div>
-                  
+
                   <div className="bg-white rounded-xl px-4 py-3 shadow-sm border border-gray-200 min-w-fit">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 flex-shrink-0"></div>
@@ -569,7 +570,7 @@ export default function EnhancedViemSwap() {
                   disabled={isLoading}
                 >
                   <svg className="w-5 h-5 transition-transform duration-300 hover:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                       d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
                   </svg>
                 </button>
@@ -583,7 +584,7 @@ export default function EnhancedViemSwap() {
                     余额: {formatBalance(balances[toToken])}
                   </span>
                 </div>
-                
+
                 <div className="flex items-center gap-3">
                   <div className="flex-1 relative">
                     <input
@@ -600,7 +601,7 @@ export default function EnhancedViemSwap() {
                       </div>
                     )}
                   </div>
-                  
+
                   <div className="bg-white rounded-xl px-4 py-3 shadow-sm border border-gray-200 min-w-fit">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-gradient-to-r from-green-400 to-green-600 flex-shrink-0"></div>
@@ -621,7 +622,7 @@ export default function EnhancedViemSwap() {
                   <div className="flex items-center gap-2 mb-3">
                     <span className="font-semibold text-blue-900">交换详情</span>
                   </div>
-                  
+
                   <div className="space-y-3">
                     <div className="flex justify-between items-center py-2 px-3 bg-white bg-opacity-50 rounded-lg">
                       <span className="text-sm text-gray-700 font-medium">汇率</span>
@@ -629,14 +630,13 @@ export default function EnhancedViemSwap() {
                         1 {fromToken} = {exchangeRate.toFixed(6)} {toToken}
                       </span>
                     </div>
-                    
+
                     <div className="flex justify-between items-center py-2 px-3 bg-white bg-opacity-50 rounded-lg">
                       <span className="text-sm text-gray-700 font-medium">价格影响</span>
                       <div className="flex items-center gap-2">
-                        <span className={`font-semibold ${
-                          priceImpact > 3 ? 'text-red-600' : 
+                        <span className={`font-semibold ${priceImpact > 3 ? 'text-red-600' :
                           priceImpact > 1 ? 'text-yellow-600' : 'text-green-600'
-                        }`}>
+                          }`}>
                           {priceImpact.toFixed(2)}%
                         </span>
                         {priceImpact > 3 && (
@@ -646,11 +646,11 @@ export default function EnhancedViemSwap() {
                         )}
                       </div>
                     </div>
-                    
+
                     <div className="flex justify-between items-center py-2 px-3 bg-white bg-opacity-50 rounded-lg">
                       <span className="text-sm text-gray-700 font-medium">最小接收</span>
                       <span className="font-semibold text-gray-900">
-                        {outputAmount ? 
+                        {outputAmount ?
                           (parseFloat(outputAmount) * (1 - parseFloat(slippage) / 100)).toFixed(toTokenData.decimals)
                           : '0'
                         } {toToken}
@@ -662,7 +662,7 @@ export default function EnhancedViemSwap() {
 
               {/* Action Button */}
               {hasInsufficientBalance() ? (
-                <button 
+                <button
                   disabled
                   className="w-full py-4 sm:py-5 bg-gray-200 text-gray-500 rounded-2xl font-bold text-lg sm:text-xl cursor-not-allowed flex items-center justify-center gap-2 touch-manipulation"
                 >
@@ -723,7 +723,7 @@ export default function EnhancedViemSwap() {
               <div className="bg-gradient-to-r from-green-500 to-emerald-600 p-4">
                 <h3 className="text-lg font-bold text-white">交易记录</h3>
               </div>
-              
+
               <div className="p-4">
                 <div className="space-y-3">
                   {transactionHistory.map((tx, index) => (
@@ -741,7 +741,7 @@ export default function EnhancedViemSwap() {
                           <p className="text-xs text-gray-500 mt-1">{tx.timestamp}</p>
                         </div>
                       </div>
-                      
+
                       <a
                         href={`https://arbiscan.io/tx/${tx.hash}`}
                         target="_blank"
@@ -749,7 +749,7 @@ export default function EnhancedViemSwap() {
                         className="p-2 bg-white rounded-lg text-blue-500 hover:text-blue-600 hover:bg-blue-50 transition-all active:scale-95 touch-manipulation"
                       >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                             d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                         </svg>
                       </a>
